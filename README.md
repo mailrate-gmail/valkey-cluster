@@ -1,28 +1,28 @@
-# Valkey Cluster + Lightweight Proxy + Docker Compose
+# Valkey Cluster + 轻量 Proxy + Docker Compose
 
-This project runs a local **Valkey Cluster** with 3 masters and 3 replicas, plus a lightweight proxy based on `redis-cluster-proxy`.
+本项目用于在本地运行一个 **Valkey Cluster**：3 个 master、3 个 replica，并额外提供一个基于 `redis-cluster-proxy` 的轻量代理。
 
-The proxy exposes the cluster as a single Redis-compatible endpoint:
+proxy 会把整个 Cluster 暴露成一个兼容 Redis 协议的单一入口：
 
 ```text
-localhost:7777  ->  redis-cluster-proxy  ->  Valkey Cluster nodes
+localhost:7777  ->  redis-cluster-proxy  ->  Valkey Cluster 节点
 ```
 
-## What This Gives You
+## 你会得到什么
 
-- 6 Valkey nodes in cluster mode: **3 masters + 3 replicas**.
-- Automatic slot assignment via `valkey-cli --cluster create`.
-- A single proxy endpoint on `localhost:7777`.
-- A `cli` toolbox container with `valkey-cli` installed.
-- Helper scripts for status checks and a quick demo.
+- 6 个 Cluster 模式的 Valkey 节点：**3 master + 3 replica**。
+- 使用 `valkey-cli --cluster create` 自动分配 16384 个 slot。
+- 一个单一 proxy 入口：`localhost:7777`。
+- 一个安装了 `valkey-cli` 的 `cli` 工具容器。
+- 用于状态检查和快速演示的辅助脚本。
 
-## Important Production Note
+## 重要生产提示
 
-This is a learning and lab setup. The proxy uses [`RedisLabs/redis-cluster-proxy`](https://github.com/RedisLabs/redis-cluster-proxy), whose upstream README says it is not actively maintained and should not be used as-is for production.
+这是学习和实验环境。proxy 使用 [`RedisLabs/redis-cluster-proxy`](https://github.com/RedisLabs/redis-cluster-proxy)，其上游 README 明确说明该项目当前并不活跃维护，不建议直接用于生产环境。
 
-For production, evaluate maintained proxy options, native Cluster-aware clients, TLS/auth, monitoring, backup, and proxy high availability.
+如果要用于生产，需要重新评估：仍在维护的 proxy 方案、原生支持 Cluster 的客户端、TLS/认证、监控、备份以及 proxy 高可用。
 
-## Architecture
+## 架构
 
 ```text
 Client
@@ -31,29 +31,29 @@ Client
   v
 redis-cluster-proxy
   |
-  +--> valkey-node-1  master/replica, port 6379 inside Docker, 7001 on host
-  +--> valkey-node-2  master/replica, port 6379 inside Docker, 7002 on host
-  +--> valkey-node-3  master/replica, port 6379 inside Docker, 7003 on host
-  +--> valkey-node-4  master/replica, port 6379 inside Docker, 7004 on host
-  +--> valkey-node-5  master/replica, port 6379 inside Docker, 7005 on host
-  +--> valkey-node-6  master/replica, port 6379 inside Docker, 7006 on host
+  +--> valkey-node-1  master/replica，Docker 内部端口 6379，宿主机端口 7001
+  +--> valkey-node-2  master/replica，Docker 内部端口 6379，宿主机端口 7002
+  +--> valkey-node-3  master/replica，Docker 内部端口 6379，宿主机端口 7003
+  +--> valkey-node-4  master/replica，Docker 内部端口 6379，宿主机端口 7004
+  +--> valkey-node-5  master/replica，Docker 内部端口 6379，宿主机端口 7005
+  +--> valkey-node-6  master/replica，Docker 内部端口 6379，宿主机端口 7006
 ```
 
-The cluster is created with `--cluster-replicas 1`, so each master gets one replica.
+集群使用 `--cluster-replicas 1` 创建，因此每个 master 会有 1 个 replica。
 
-## Quick Start
+## 快速开始
 
 ```bash
 cd ~/valkey-cluster
 
-# Build proxy image, start Valkey nodes, initialize cluster, start proxy and CLI toolbox.
+# 构建 proxy 镜像，启动 Valkey 节点，初始化 Cluster，启动 proxy 和 CLI 工具容器。
 docker compose up -d --build
 
-# Check the cluster and proxy.
+# 检查 Cluster 和 proxy 状态。
 ./scripts/status.sh
 ```
 
-Write and read through the proxy:
+通过 proxy 写入和读取：
 
 ```bash
 docker compose exec -T cli valkey-cli -h proxy -p 7777 SET hello world
@@ -61,7 +61,7 @@ docker compose exec -T cli valkey-cli -h proxy -p 7777 GET hello
 docker compose exec -T cli valkey-cli -h proxy -p 7777 DBSIZE
 ```
 
-From the host, if you have `valkey-cli` installed:
+如果宿主机安装了 `valkey-cli`，也可以从宿主机直接访问 proxy：
 
 ```bash
 valkey-cli -h 127.0.0.1 -p 7777 SET host:hello world
@@ -74,42 +74,42 @@ valkey-cli -h 127.0.0.1 -p 7777 GET host:hello
 ./scripts/demo.sh
 ```
 
-The demo starts the stack, writes several keys through the proxy, reads them back, prints their cluster slots, and shows cluster status.
+这个 demo 会启动整个 stack，通过 proxy 写入几个 key，再读取这些 key，打印它们的 Cluster slot，并显示集群状态。
 
-## Ports
+## 端口
 
-| Component | Host Port | Container Port | Purpose |
-|-----------|-----------|----------------|---------|
-| proxy | `7777` | `7777` | Single endpoint for clients |
-| valkey-node-1 | `7001` | `6379` | Direct node debugging |
-| valkey-node-2 | `7002` | `6379` | Direct node debugging |
-| valkey-node-3 | `7003` | `6379` | Direct node debugging |
-| valkey-node-4 | `7004` | `6379` | Direct node debugging |
-| valkey-node-5 | `7005` | `6379` | Direct node debugging |
-| valkey-node-6 | `7006` | `6379` | Direct node debugging |
+| 组件 | 宿主机端口 | 容器端口 | 用途 |
+|------|------------|----------|------|
+| proxy | `7777` | `7777` | 客户端单一入口 |
+| valkey-node-1 | `7001` | `6379` | 直接调试节点 |
+| valkey-node-2 | `7002` | `6379` | 直接调试节点 |
+| valkey-node-3 | `7003` | `6379` | 直接调试节点 |
+| valkey-node-4 | `7004` | `6379` | 直接调试节点 |
+| valkey-node-5 | `7005` | `6379` | 直接调试节点 |
+| valkey-node-6 | `7006` | `6379` | 直接调试节点 |
 
-The direct node ports are for debugging. Normal clients should use the proxy at `localhost:7777` unless they are Cluster-aware and understand the advertised Docker hostnames.
+这些直接节点端口主要用于调试。普通客户端应该使用 proxy：`localhost:7777`。除非客户端原生支持 Cluster，并且能理解节点对外通告的 Docker hostname，否则不建议直接连节点端口。
 
-## Useful Commands
+## 常用命令
 
 ```bash
-# Start or rebuild everything.
+# 启动或重新构建全部服务。
 make up
 
-# Show cluster and proxy status.
+# 显示 Cluster 和 proxy 状态。
 make status
 
-# Follow logs.
+# 跟踪日志。
 make logs
 
-# Stop containers but keep volumes.
+# 停止容器，但保留数据卷。
 make down
 
-# Delete all cluster data and recreate from scratch.
+# 删除所有 Cluster 数据并从零重建。
 make reset
 ```
 
-Without `make`:
+不使用 `make` 也可以：
 
 ```bash
 docker compose up -d --build
@@ -119,72 +119,72 @@ docker compose down
 docker compose down -v
 ```
 
-## Failure Test
+## 故障测试
 
-Stop one node and observe Cluster failover:
+停止一个节点，观察 Cluster 自动故障转移：
 
 ```bash
 docker compose stop valkey-node-1
 sleep 15
 ./scripts/status.sh
 
-# The proxy should still accept normal commands.
+# proxy 应该仍然可以接受普通命令。
 docker compose exec -T cli valkey-cli -h proxy -p 7777 SET after:failover ok
 docker compose exec -T cli valkey-cli -h proxy -p 7777 GET after:failover
 
-# Bring the node back.
+# 恢复节点。
 docker compose start valkey-node-1
 sleep 15
 ./scripts/status.sh
 ```
 
-The exact master/replica layout may change after failover. Use `CLUSTER NODES` from `scripts/status.sh` as the source of truth.
+故障转移后，具体的 master/replica 布局可能会变化。请以 `scripts/status.sh` 中的 `CLUSTER NODES` 输出为准。
 
-## Cross-Slot Commands
+## 跨 Slot 命令
 
-The proxy is started with `--enable-cross-slot`, so commands such as `MGET` or `DEL` across different slots can be split and merged by the proxy.
+proxy 启动时开启了 `--enable-cross-slot`，因此像 `MGET` 或 `DEL` 这类跨不同 slot 的命令可以由 proxy 拆分、转发并合并结果。
 
-Example:
+示例：
 
 ```bash
 docker compose exec -T cli valkey-cli -h proxy -p 7777 MGET lab:user:1 lab:user:2
 ```
 
-Important: cross-slot proxy handling is not the same as an atomic single-node operation. Do not treat cross-slot multi-key writes as atomic transactions.
+注意：proxy 对跨 slot 命令的处理不等同于单节点原子操作。不要把跨 slot 的多 key 写入当成原子事务。
 
-## Reset
+## 重置
 
-To remove all data and cluster metadata:
+删除所有数据和 Cluster 元数据：
 
 ```bash
 docker compose down -v
 docker compose up -d --build
 ```
 
-`-v` deletes all named volumes. Use it only for lab resets.
+`-v` 会删除所有命名数据卷。只在实验重置时使用。
 
-## Troubleshooting
+## 故障排查
 
-### Proxy does not start
+### proxy 无法启动
 
-Check cluster initialization logs:
+查看 Cluster 初始化日志：
 
 ```bash
 docker compose logs cluster-init
 docker compose logs proxy
 ```
 
-If cluster metadata is partially initialized, reset volumes:
+如果 Cluster 元数据处于半初始化状态，重置数据卷：
 
 ```bash
 docker compose down -v
 docker compose up -d --build
 ```
 
-### Direct node access from host gets MOVED to a Docker hostname
+### 从宿主机直连节点时收到 MOVED 到 Docker hostname
 
-This is expected. Nodes announce Docker hostnames so services inside the Compose network can route correctly. Use the proxy endpoint `localhost:7777` for host access, or run `valkey-cli` inside the `cli` container.
+这是预期行为。节点会通告 Docker hostname，便于 Compose 网络内的服务正确路由。宿主机访问建议使用 proxy 入口 `localhost:7777`，或在 `cli` 容器内运行 `valkey-cli`。
 
-### Build is slow
+### 构建很慢
 
-The first build compiles `redis-cluster-proxy` from source. Later builds use Docker cache.
+第一次构建会从源码编译 `redis-cluster-proxy`。后续构建会使用 Docker 缓存。
