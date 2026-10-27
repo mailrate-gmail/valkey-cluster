@@ -1,0 +1,157 @@
+name: valkey-cluster-proxy
+
+x-valkey-node: &valkey-node
+  image: valkey/valkey:8-alpine
+  restart: unless-stopped
+  networks:
+    - valkeynet
+  command:
+    - sh
+    - -c
+    - |
+      exec valkey-server \
+        --port 6379 \
+        --bind 0.0.0.0 \
+        --protected-mode no \
+        --appendonly yes \
+        --appendfsync everysec \
+        --cluster-enabled yes \
+        --cluster-config-file nodes.conf \
+        --cluster-node-timeout 5000 \
+        --cluster-announce-hostname "$${HOSTNAME}" \
+        --cluster-announce-port 6379 \
+        --cluster-announce-bus-port 16379 \
+        --cluster-preferred-endpoint-type hostname
+  healthcheck:
+    test: ["CMD", "valkey-cli", "-p", "6379", "PING"]
+    interval: 5s
+    timeout: 3s
+    retries: 30
+    start_period: 5s
+
+services:
+  valkey-node-1:
+    <<: *valkey-node
+    hostname: valkey-node-1
+    ports:
+      - "7001:6379"
+    volumes:
+      - valkey-node-1-data:/data
+
+  valkey-node-2:
+    <<: *valkey-node
+    hostname: valkey-node-2
+    ports:
+      - "7002:6379"
+    volumes:
+      - valkey-node-2-data:/data
+
+  valkey-node-3:
+    <<: *valkey-node
+    hostname: valkey-node-3
+    ports:
+      - "7003:6379"
+    volumes:
+      - valkey-node-3-data:/data
+
+  valkey-node-4:
+    <<: *valkey-node
+    hostname: valkey-node-4
+    ports:
+      - "7004:6379"
+    volumes:
+      - valkey-node-4-data:/data
+
+  valkey-node-5:
+    <<: *valkey-node
+    hostname: valkey-node-5
+    ports:
+      - "7005:6379"
+    volumes:
+      - valkey-node-5-data:/data
+
+  valkey-node-6:
+    <<: *valkey-node
+    hostname: valkey-node-6
+    ports:
+      - "7006:6379"
+    volumes:
+      - valkey-node-6-data:/data
+
+  cluster-init:
+    image: valkey/valkey:8-alpine
+    restart: "no"
+    networks:
+      - valkeynet
+    depends_on:
+      valkey-node-1:
+        condition: service_healthy
+      valkey-node-2:
+        condition: service_healthy
+      valkey-node-3:
+        condition: service_healthy
+      valkey-node-4:
+        condition: service_healthy
+      valkey-node-5:
+        condition: service_healthy
+      valkey-node-6:
+        condition: service_healthy
+    environment:
+      CLUSTER_NODES: "valkey-node-1:6379 valkey-node-2:6379 valkey-node-3:6379 valkey-node-4:6379 valkey-node-5:6379 valkey-node-6:6379"
+      CLUSTER_REPLICAS: "1"
+      CLUSTER_WAIT_TIMEOUT: "120"
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/init-cluster.sh"]
+
+  proxy:
+    build:
+      context: ./proxy
+      args:
+        REDIS_CLUSTER_PROXY_REF: unstable
+    image: local/valkey-cluster-proxy:latest
+    restart: unless-stopped
+    networks:
+      - valkeynet
+    depends_on:
+      cluster-init:
+        condition: service_completed_successfully
+    ports:
+      - "7777:7777"
+    command:
+      - --port
+      - "7777"
+      - --bind
+      - 0.0.0.0
+      - --enable-cross-slot
+      - valkey-node-1:6379
+      - valkey-node-2:6379
+      - valkey-node-3:6379
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-h", "127.0.0.1", "-p", "7777", "PING"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  cli:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: ["sleep", "infinity"]
+    networks:
+      - valkeynet
+    depends_on:
+      proxy:
+        condition: service_healthy
+
+networks:
+  valkeynet:
+    driver: bridge
+
+volumes:
+  valkey-node-1-data:
+  valkey-node-2-data:
+  valkey-node-3-data:
+  valkey-node-4-data:
+  valkey-node-5-data:
+  valkey-node-6-data:
