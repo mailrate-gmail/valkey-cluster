@@ -18,7 +18,9 @@ Valkey Cluster nodes
 - 使用 `valkey-cli --cluster create` 自动分配 16384 个 slot。
 - 一个 `cli` 工具容器，内置 `valkey-cli`。
 - 一个 `python-client` 容器，内置 `valkey-py`。
+- 一个 `valkey-admin` Web UI，用于查看拓扑、slot、replication 和 key。
 - Python 示例：普通读写、同 slot 多 key、跨 slot 应用层拆分/合并。
+- 自动备份脚本：`scripts/backup.sh`。
 
 ## 新手实验手册
 
@@ -78,6 +80,32 @@ docker compose exec -T cli valkey-cli -h valkey-node-1 -p 6379 CLUSTER INFO
 ```
 
 注意：节点通告的是 Docker hostname，宿主机直接用 `valkey-cli -c -p 7001` 可能会被重定向到 `valkey-node-N`，而宿主机默认不能解析这些名字。宿主机应用建议放进同一个 Docker 网络，或改用能解析这些 hostname 的环境。
+
+## 使用 Valkey Admin 图形界面
+
+本项目已接入 Valkey 官方的 **Valkey Admin** Web UI：
+
+```text
+http://127.0.0.1:8080
+```
+
+Compose 中已预配置连接：
+
+```text
+VALKEY_HOST=valkey-node-1
+VALKEY_PORT=6379
+```
+
+Valkey Admin 会自动识别 Cluster 拓扑，可用于查看：
+
+- Cluster Topology
+- slots 分布
+- master / replica 关系
+- key browser
+- metrics
+- command console
+
+安全提示：Valkey Admin Web 模式默认没有认证。本项目只绑定到 `127.0.0.1:8080`，不要直接暴露到公网。
 
 ## valkey-py 示例说明
 
@@ -153,6 +181,9 @@ make status
 # 运行 Python demo。
 make demo
 
+# 创建一次 Cluster 备份。
+make backup
+
 # 跟踪日志。
 make logs
 
@@ -203,6 +234,28 @@ docker compose up -d --build
 ```
 
 `-v` 会删除所有命名数据卷。只在实验重置时使用。
+
+## 备份
+
+创建一次备份：
+
+```bash
+./scripts/backup.sh
+```
+
+默认生成：
+
+```text
+backups/valkey-cluster-YYYYMMDD-HHMMSS.tar.gz
+```
+
+保留最近 7 份备份。可通过环境变量调整：
+
+```bash
+BACKUP_RETENTION_COUNT=14 ./scripts/backup.sh
+```
+
+恢复说明见：[`restore-notes.md`](restore-notes.md)
 
 ## 故障排查
 

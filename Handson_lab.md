@@ -43,6 +43,7 @@ Valkey Cluster 节点
 | `cluster-init` | 1 | 一次性容器，执行 `valkey-cli --cluster create` |
 | `cli` | 1 | 工具容器，内置 `valkey-cli` 和 `valkey-benchmark` |
 | `python-client` | 1 | Python 工具容器，内置 `valkey-py` |
+| `valkey-admin` | 1 | Valkey 官方 Web UI，用于查看拓扑、slot、replication、key 和 metrics |
 
 ### 2.2 架构图
 
@@ -57,6 +58,12 @@ python-client / application
   +--> valkey-node-4  master/replica, host port 7004
   +--> valkey-node-5  master/replica, host port 7005
   +--> valkey-node-6  master/replica, host port 7006
+
+valkey-admin Web UI
+  |
+  | http://127.0.0.1:8080
+  v
+valkey-node-1:6379  ->  自动发现整个 Cluster
 ```
 
 ### 2.3 数据如何分片
@@ -106,6 +113,7 @@ proxy 只适合兼容旧客户端或隐藏拓扑，不是本实验默认方案�
 | 跨 slot 批量读 | 示例支持 | `valkey_py_demo.py` 演示应用层拆分/合并 |
 | 压测 | 支持 | 使用 `valkey-benchmark --cluster` |
 | 日常状态检查 | 支持 | `scripts/status.sh` |
+| 自动备份 | 支持 | `scripts/backup.sh` 生成带元数据的压缩归档 |
 
 ### 3.2 当前欠缺或限制
 
@@ -113,7 +121,6 @@ proxy 只适合兼容旧客户端或隐藏拓扑，不是本实验默认方案�
 |------|------|
 | 没有认证 | 当前实验环境未配置 `requirepass` / ACL |
 | 没有 TLS | Cluster bus 和客户端连接都未启用 TLS |
-| 没有持久化备份流程自动化 | 只开启 AOF，备份需要自行做 |
 | 没有监控系统 | 未集成 Prometheus / Grafana |
 | 没有自动扩缩容脚本 | 扩容需要修改 Compose 并执行 `add-node` / `reshard` |
 | 跨 slot 事务不支持 | 事务和 Lua 要求所有 key 在同一 slot |
@@ -144,7 +151,8 @@ docker compose up -d --build
 2. 等待所有节点健康；
 3. `cluster-init` 执行 `valkey-cli --cluster create ... --cluster-replicas 1`；
 4. 启动 `cli` 工具容器；
-5. 启动 `python-client` 容器。
+5. 启动 `python-client` 容器；
+6. 启动 `valkey-admin` Web UI。
 
 ### 4.3 查看状态
 
@@ -176,7 +184,102 @@ demo 会展示：
 - 应用层拆分/合并实现跨 slot `MGET`；
 - 清理测试 key。
 
-### 4.5 `~/.profile` 快捷函数
+### 4.5 打开 Valkey Admin 图形界面
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8080
+```
+
+Compose 已预配置连接：
+
+```text
+VALKEY_HOST=valkey-node-1
+VALKEY_PORT=6379
+```
+
+Valkey Admin 会自动识别 Cluster。你可以在界面中查看：
+
+- Cluster Topology：集群拓扑；
+- Slots：slot 分布；
+- Replication：master / replica 关系；
+- Key Browser：key 浏览；
+- Metrics：节点指标；
+- Send Command：发送命令。
+
+安全提示：Valkey Admin Web 模式没有内置登录认证。本实验只绑定到 `127.0.0.1:8080`，不要直接开放到公网。
+
+#### 解读 Cluster Slots 展平字段
+
+Valkey Admin 或某些 GUI 会把 `CLUSTER SLOTS` 的嵌套数组结果展平成类似路径的字段。例如你可能看到：
+
+```text
+2.3.3.0.key    ip
+2.3.3.0.value  172.20.0.2
+```
+
+这不是业务 key，而是 **Cluster 节点元数据**。
+
+`CLUSTER SLOTS` 的逻辑结构大致是：
+
+```text
+[
+  [slot_start, slot_end, master, replica1, replica2, ...],
+  [slot_start, slot_end, master, replica1, replica2, ...],
+  ...
+]
+```
+
+每个节点信息又类似：
+
+```text
+[hostname, port, node_id, metadata]
+```
+
+所以：
+
+```text
+2.3.3.0.key    ip
+2.3.3.0.value  172.20.0.2
+```
+
+可以理解为：
+
+```text
+第 3 个 slot range
+  -> 第 4 个节点信息
+    -> 第 4 个字段 metadata
+      -> 第 1 个 metadata 项
+        key   = ip
+        value = 172.20.0.2
+```
+
+结合当前实验环境，`172.20.0.2` 是某个 Valkey 容器在 Docker 网络中的内部 IP。例如当前可能对应：
+
+```text
+slot range: 10923 - 16383
+master:     valkey-node-3
+replica:    valkey-node-4
+replica ip: 172.20.0.2
+```
+
+因为本项目配置了：
+
+```text
+--cluster-preferred-endpoint-type hostname
+```
+
+所以 Cluster 主要通告 `valkey-node-1`、`valkey-node-2` 这类 hostname，同时 metadata 中仍可能带有 Docker 内部 IP。
+
+你可以用命令行对照 GUI 展示：
+
+```bash
+vn valkey-node-1 CLUSTER SLOTS
+vn valkey-node-1 CLUSTER NODES
+```
+
+### 4.6 `~/.profile` 快捷函数
 
 当前实验环境已经在 `~/.profile` 中增加了两个 Valkey helper 函数。新开终端后执行：
 
@@ -478,13 +581,52 @@ docker compose up -d --build
 
 ### 8.8 备份
 
-当前实验开启 AOF，数据存放在 Docker named volumes 中。
+当前实验开启 AOF，数据存放在 Docker named volumes 中。项目已经提供自动备份脚本：
 
-简单备份思路：
+```bash
+./scripts/backup.sh
+```
 
-1. 停止写入或进入维护窗口；
-2. 对每个节点数据卷做文件级备份；
-3. 或使用 `valkey-cli --cluster backup` 导出：
+默认输出：
+
+```text
+backups/valkey-cluster-YYYYMMDD-HHMMSS.tar.gz
+```
+
+备份归档包含：
+
+- `metadata.txt`：备份时间、入口节点、git commit 等；
+- `cluster-info.txt`：`CLUSTER INFO`；
+- `cluster-nodes.txt`：`CLUSTER NODES`；
+- `cluster-slots.txt`：`CLUSTER SLOTS`；
+- `valkey-node-*-info.txt`：每个节点的关键状态；
+- `data/`：`valkey-cli --cluster backup` 导出的数据文件。
+
+保留最近 7 份备份。可以用环境变量调整：
+
+```bash
+BACKUP_RETENTION_COUNT=14 ./scripts/backup.sh
+```
+
+如果想保留未压缩目录用于检查：
+
+```bash
+KEEP_BACKUP_DIR=1 ./scripts/backup.sh
+```
+
+定时备份可以用 cron：
+
+```cron
+0 2 * * * cd /home/opc/valkey-cluster && ./scripts/backup.sh >> logs/backup.log 2>&1
+```
+
+恢复说明见：`restore-notes.md`。
+
+#### 手动备份命令
+
+自动脚本内部使用的是 `valkey-cli --cluster backup`。
+
+如果要手动执行，流程如下：
 
 ```bash
 docker compose exec -T cli sh -c '
@@ -494,7 +636,15 @@ docker compose exec -T cli sh -c '
 '
 ```
 
-这里的 `/tmp/backup` 位于 `cli` 容器内。生产环境应挂载宿主机目录或对象存储，并使用更正式的备份、校验和恢复演练流程。
+这里的 `/tmp/backup` 位于 `cli` 容器内。自动脚本会把它复制回宿主机并压缩。
+
+生产环境还应补充：
+
+- 备份加密；
+- 远端上传，例如 S3 / OSS / NFS；
+- 备份完整性校验；
+- 失败告警；
+- 定期恢复演练。
 
 ### 8.9 重置实验环境
 

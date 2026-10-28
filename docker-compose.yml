@@ -128,6 +128,22 @@ services:
       cluster-init:
         condition: service_completed_successfully
 
+  valkey-admin:
+    image: valkey/valkey-admin:latest
+    restart: unless-stopped
+    networks:
+      - valkeynet
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DEPLOYMENT_MODE: Web
+      VALKEY_HOST: valkey-node-1
+      VALKEY_PORT: "6379"
+      VALKEY_TLS: "false"
+    depends_on:
+      cluster-init:
+        condition: service_completed_successfully
+
 networks:
   valkeynet:
     driver: bridge

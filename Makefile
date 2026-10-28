@@ -1,4 +1,4 @@
-.PHONY: up build status demo logs down reset ps
+.PHONY: up build status demo backup logs down reset ps
 
 up:
 	docker compose up -d --build
@@ -11,6 +11,9 @@ status:
 
 demo:
 	./scripts/demo.sh
+
+backup:
+	./scripts/backup.sh
 
 logs:
 	docker compose logs -f --tail=100
