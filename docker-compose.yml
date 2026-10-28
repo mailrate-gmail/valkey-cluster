@@ -1,4 +1,4 @@
-name: valkey-cluster-proxy
+name: valkey-cluster
 
 x-valkey-node: &valkey-node
   image: valkey/valkey:8-alpine
@@ -104,36 +104,6 @@ services:
       - ./scripts:/scripts:ro
     entrypoint: ["/bin/sh", "/scripts/init-cluster.sh"]
 
-  proxy:
-    build:
-      context: ./proxy
-      args:
-        REDIS_CLUSTER_PROXY_REF: unstable
-    image: local/valkey-cluster-proxy:latest
-    restart: unless-stopped
-    networks:
-      - valkeynet
-    depends_on:
-      cluster-init:
-        condition: service_completed_successfully
-    ports:
-      - "7777:7777"
-    command:
-      - --port
-      - "7777"
-      - --bind
-      - 0.0.0.0
-      - --enable-cross-slot
-      - valkey-node-1:6379
-      - valkey-node-2:6379
-      - valkey-node-3:6379
-    healthcheck:
-      test: ["CMD", "valkey-cli", "-h", "127.0.0.1", "-p", "7777", "PING"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 5s
-
   cli:
     image: valkey/valkey:8-alpine
     restart: unless-stopped
@@ -141,8 +111,22 @@ services:
     networks:
       - valkeynet
     depends_on:
-      proxy:
-        condition: service_healthy
+      cluster-init:
+        condition: service_completed_successfully
+
+  python-client:
+    build:
+      context: ./client
+    image: local/valkey-py-client:latest
+    restart: unless-stopped
+    command: ["sleep", "infinity"]
+    networks:
+      - valkeynet
+    volumes:
+      - ./scripts:/scripts:ro
+    depends_on:
+      cluster-init:
+        condition: service_completed_successfully
 
 networks:
   valkeynet:

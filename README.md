@@ -1,35 +1,31 @@
-# Valkey Cluster + 轻量 Proxy + Docker Compose
+# Valkey Cluster + valkey-py + Docker Compose
 
-本项目用于在本地运行一个 **Valkey Cluster**：3 个 master、3 个 replica，并额外提供一个基于 `redis-cluster-proxy` 的轻量代理。
+本项目在本地运行一个 **Valkey Cluster**：3 个 master、3 个 replica，并提供一个基于 **valkey-py** 的 Cluster-aware 客户端示例。
 
-proxy 会把整个 Cluster 暴露成一个兼容 Redis 协议的单一入口：
+当前方案不再使用 `redis-cluster-proxy`。Valkey 官方文档推荐使用 Cluster-aware client 连接 Valkey Cluster，客户端负责发现 slot map、处理 `MOVED` / `ASK`、failover 和 reshard 后的拓扑刷新。
 
 ```text
-localhost:7777  ->  redis-cluster-proxy  ->  Valkey Cluster 节点
+Python app / valkey-py
+  |
+  | CLUSTER SLOTS / MOVED / ASK
+  v
+Valkey Cluster nodes
 ```
 
 ## 你会得到什么
 
 - 6 个 Cluster 模式的 Valkey 节点：**3 master + 3 replica**。
 - 使用 `valkey-cli --cluster create` 自动分配 16384 个 slot。
-- 一个单一 proxy 入口：`localhost:7777`。
-- 一个安装了 `valkey-cli` 的 `cli` 工具容器。
-- 用于状态检查和快速演示的辅助脚本。
-
-## 重要生产提示
-
-这是学习和实验环境。proxy 使用 [`RedisLabs/redis-cluster-proxy`](https://github.com/RedisLabs/redis-cluster-proxy)，其上游 README 明确说明该项目当前并不活跃维护，不建议直接用于生产环境。
-
-如果要用于生产，需要重新评估：仍在维护的 proxy 方案、原生支持 Cluster 的客户端、TLS/认证、监控、备份以及 proxy 高可用。
+- 一个 `cli` 工具容器，内置 `valkey-cli`。
+- 一个 `python-client` 容器，内置 `valkey-py`。
+- Python 示例：普通读写、同 slot 多 key、跨 slot 应用层拆分/合并。
 
 ## 架构
 
 ```text
-Client
+python-client container
   |
-  | localhost:7777
-  v
-redis-cluster-proxy
+  | valkey-py ValkeyCluster(host="valkey-node-1", port=6379)
   |
   +--> valkey-node-1  master/replica，Docker 内部端口 6379，宿主机端口 7001
   +--> valkey-node-2  master/replica，Docker 内部端口 6379，宿主机端口 7002
@@ -46,41 +42,92 @@ redis-cluster-proxy
 ```bash
 cd ~/valkey-cluster
 
-# 构建 proxy 镜像，启动 Valkey 节点，初始化 Cluster，启动 proxy 和 CLI 工具容器。
+# 构建 python-client 镜像，启动 Valkey 节点，初始化 Cluster。
 docker compose up -d --build
 
-# 检查 Cluster 和 proxy 状态。
+# 检查 Cluster 和 valkey-py 客户端连通性。
 ./scripts/status.sh
 ```
 
-通过 proxy 写入和读取：
-
-```bash
-docker compose exec -T cli valkey-cli -h proxy -p 7777 SET hello world
-docker compose exec -T cli valkey-cli -h proxy -p 7777 GET hello
-docker compose exec -T cli valkey-cli -h proxy -p 7777 DBSIZE
-```
-
-如果宿主机安装了 `valkey-cli`，也可以从宿主机直接访问 proxy：
-
-```bash
-valkey-cli -h 127.0.0.1 -p 7777 SET host:hello world
-valkey-cli -h 127.0.0.1 -p 7777 GET host:hello
-```
-
-## Demo
+运行 Python demo：
 
 ```bash
 ./scripts/demo.sh
 ```
 
-这个 demo 会启动整个 stack，通过 proxy 写入几个 key，再读取这些 key，打印它们的 Cluster slot，并显示集群状态。
+也可以手动执行：
+
+```bash
+docker compose exec -T python-client python /scripts/valkey_py_demo.py
+```
+
+## 使用 valkey-cli 直接验证 Cluster
+
+在 Compose 网络内使用 `cli` 工具容器：
+
+```bash
+docker compose exec -T cli valkey-cli -c -h valkey-node-1 -p 6379 SET hello world
+docker compose exec -T cli valkey-cli -c -h valkey-node-1 -p 6379 GET hello
+docker compose exec -T cli valkey-cli -h valkey-node-1 -p 6379 CLUSTER INFO
+```
+
+注意：节点通告的是 Docker hostname，宿主机直接用 `valkey-cli -c -p 7001` 可能会被重定向到 `valkey-node-N`，而宿主机默认不能解析这些名字。宿主机应用建议放进同一个 Docker 网络，或改用能解析这些 hostname 的环境。
+
+## valkey-py 示例说明
+
+示例脚本：`scripts/valkey_py_demo.py`
+
+核心连接方式：
+
+```python
+from valkey.cluster import ValkeyCluster
+
+client = ValkeyCluster(host="valkey-node-1", port=6379, decode_responses=True)
+```
+
+valkey-py 会：
+
+- 连接启动节点；
+- 拉取 Cluster slot map；
+- 根据 key 计算 slot；
+- 直接把命令路由到正确节点；
+- 遇到 `MOVED` / `ASK` 时刷新拓扑。
+
+## 跨 slot 多 key 操作
+
+Cluster 要求事务、Lua、原子多 key 操作必须同 slot。如果需要多 key 原子性，请使用 hash tag：
+
+```text
+cart:{1001}:items
+cart:{1001}:total
+```
+
+这两个 key 都按 `{1001}` 计算 slot，可以直接：
+
+```python
+client.mget(["cart:{1001}:items", "cart:{1001}:total"])
+```
+
+如果 key 不同 slot，只能在应用层拆分再合并，且不具备原子性。示例脚本里提供了：
+
+```python
+cross_slot_mget(client, keys)
+cross_slot_delete(client, keys)
+```
+
+它们的逻辑是：
+
+```text
+计算每个 key 的 slot
+按 slot 分组
+每组分别执行 MGET / DEL
+最后按原 key 顺序合并结果
+```
 
 ## 端口
 
 | 组件 | 宿主机端口 | 容器端口 | 用途 |
 |------|------------|----------|------|
-| proxy | `7777` | `7777` | 客户端单一入口 |
 | valkey-node-1 | `7001` | `6379` | 直接调试节点 |
 | valkey-node-2 | `7002` | `6379` | 直接调试节点 |
 | valkey-node-3 | `7003` | `6379` | 直接调试节点 |
@@ -88,16 +135,17 @@ valkey-cli -h 127.0.0.1 -p 7777 GET host:hello
 | valkey-node-5 | `7005` | `6379` | 直接调试节点 |
 | valkey-node-6 | `7006` | `6379` | 直接调试节点 |
 
-这些直接节点端口主要用于调试。普通客户端应该使用 proxy：`localhost:7777`。除非客户端原生支持 Cluster，并且能理解节点对外通告的 Docker hostname，否则不建议直接连节点端口。
-
 ## 常用命令
 
 ```bash
 # 启动或重新构建全部服务。
 make up
 
-# 显示 Cluster 和 proxy 状态。
+# 显示 Cluster 和 valkey-py 状态。
 make status
+
+# 运行 Python demo。
+make demo
 
 # 跟踪日志。
 make logs
@@ -128,9 +176,8 @@ docker compose stop valkey-node-1
 sleep 15
 ./scripts/status.sh
 
-# proxy 应该仍然可以接受普通命令。
-docker compose exec -T cli valkey-cli -h proxy -p 7777 SET after:failover ok
-docker compose exec -T cli valkey-cli -h proxy -p 7777 GET after:failover
+# valkey-py 应该仍然可以通过 Cluster 拓扑继续访问。
+docker compose exec -T python-client python /scripts/valkey_py_demo.py --status-only
 
 # 恢复节点。
 docker compose start valkey-node-1
@@ -139,18 +186,6 @@ sleep 15
 ```
 
 故障转移后，具体的 master/replica 布局可能会变化。请以 `scripts/status.sh` 中的 `CLUSTER NODES` 输出为准。
-
-## 跨 Slot 命令
-
-proxy 启动时开启了 `--enable-cross-slot`，因此像 `MGET` 或 `DEL` 这类跨不同 slot 的命令可以由 proxy 拆分、转发并合并结果。
-
-示例：
-
-```bash
-docker compose exec -T cli valkey-cli -h proxy -p 7777 MGET lab:user:1 lab:user:2
-```
-
-注意：proxy 对跨 slot 命令的处理不等同于单节点原子操作。不要把跨 slot 的多 key 写入当成原子事务。
 
 ## 重置
 
@@ -165,13 +200,14 @@ docker compose up -d --build
 
 ## 故障排查
 
-### proxy 无法启动
+### Python 客户端无法连接
 
-查看 Cluster 初始化日志：
+查看初始化和客户端日志：
 
 ```bash
 docker compose logs cluster-init
-docker compose logs proxy
+docker compose logs python-client
+./scripts/status.sh
 ```
 
 如果 Cluster 元数据处于半初始化状态，重置数据卷：
@@ -181,10 +217,10 @@ docker compose down -v
 docker compose up -d --build
 ```
 
-### 从宿主机直连节点时收到 MOVED 到 Docker hostname
+### 宿主机直连节点时收到 MOVED 到 Docker hostname
 
-这是预期行为。节点会通告 Docker hostname，便于 Compose 网络内的服务正确路由。宿主机访问建议使用 proxy 入口 `localhost:7777`，或在 `cli` 容器内运行 `valkey-cli`。
+这是预期行为。节点会通告 Docker hostname，便于 Compose 网络内的服务正确路由。宿主机应用如果不能解析 `valkey-node-N`，请运行在 Compose 网络内，或调整节点通告地址。
 
-### 构建很慢
+### 是否还需要 proxy
 
-第一次构建会从源码编译 `redis-cluster-proxy`。后续构建会使用 Docker 缓存。
+默认不需要。Valkey Cluster 的推荐方式是使用 Cluster-aware client，例如 `valkey-py`、Valkey GLIDE、valkey-go、iovalkey、valkey-java 等。proxy 只适合兼容旧客户端或隐藏拓扑，但会引入额外故障点和维护风险。
