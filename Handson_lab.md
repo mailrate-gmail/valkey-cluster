@@ -44,6 +44,9 @@ Valkey Cluster 节点
 | `cli` | 1 | 工具容器，内置 `valkey-cli` 和 `valkey-benchmark` |
 | `python-client` | 1 | Python 工具容器，内置 `valkey-py` |
 | `valkey-admin` | 1 | Valkey 官方 Web UI，用于查看拓扑、slot、replication、key 和 metrics |
+| `valkey-exporter` | 1 | Prometheus exporter，采集 Valkey 指标 |
+| `prometheus` | 1 | 时序数据库，长期保存指标 |
+| `grafana` | 1 | 图形化监控面板 |
 
 ### 2.2 架构图
 
@@ -114,6 +117,7 @@ proxy 只适合兼容旧客户端或隐藏拓扑，不是本实验默认方案�
 | 压测 | 支持 | 使用 `valkey-benchmark --cluster` |
 | 日常状态检查 | 支持 | `scripts/status.sh` |
 | 自动备份 | 支持 | `scripts/backup.sh` 生成带元数据的压缩归档 |
+| 长期监控 | 支持 | Grafana + Prometheus + valkey-exporter |
 
 ### 3.2 当前欠缺或限制
 
@@ -121,7 +125,6 @@ proxy 只适合兼容旧客户端或隐藏拓扑，不是本实验默认方案�
 |------|------|
 | 没有认证 | 当前实验环境未配置 `requirepass` / ACL |
 | 没有 TLS | Cluster bus 和客户端连接都未启用 TLS |
-| 没有监控系统 | 未集成 Prometheus / Grafana |
 | 没有自动扩缩容脚本 | 扩容需要修改 Compose 并执行 `add-node` / `reshard` |
 | 跨 slot 事务不支持 | 事务和 Lua 要求所有 key 在同一 slot |
 | 跨 slot 多 key 不原子 | 应用层拆分/合并只适合非原子场景 |
@@ -153,6 +156,7 @@ docker compose up -d --build
 4. 启动 `cli` 工具容器；
 5. 启动 `python-client` 容器；
 6. 启动 `valkey-admin` Web UI。
+7. 启动 `valkey-exporter`、`prometheus` 和 `grafana` 监控服务。
 
 ### 4.3 查看状态
 
@@ -309,6 +313,44 @@ vn valkey-node-2 DBSIZE
 | `vn` | 直连指定节点执行管理/排查命令 | `vn valkey-node-1 CLUSTER NODES` |
 
 如果提示 `vc: command not found` 或 `vn: command not found`，说明当前 shell 尚未加载 `.profile`，重新执行 `source ~/.profile` 即可。
+
+### 4.7 打开 Grafana 和 Prometheus
+
+Prometheus：
+
+```text
+http://127.0.0.1:9090
+```
+
+Grafana：
+
+```text
+http://127.0.0.1:3000
+```
+
+Grafana 默认账号：
+
+```text
+username: admin
+password: admin
+```
+
+进入 Grafana 后查看：
+
+```text
+Dashboards -> Valkey -> Valkey Cluster Overview
+```
+
+该 dashboard 展示：
+
+- QPS by node；
+- Memory used；
+- Connected clients；
+- Node up；
+- Key count；
+- Command latency signal。
+
+安全提示：Prometheus 和 Grafana 都只绑定到 `127.0.0.1`。如果你从本地笔记本访问远端服务器，需要使用 SSH tunnel。
 
 ---
 
@@ -478,6 +520,42 @@ docker compose exec -T cli valkey-cli -h valkey-node-1 -p 6379 SLOWLOG GET 10
 docker stats
 ```
 
+Grafana 观察：
+
+```text
+http://127.0.0.1:3000
+```
+
+重点观察：
+
+- QPS by node：请求是否均匀分布；
+- Memory used：内存增长趋势；
+- Connected clients：连接数变化；
+- Node up：节点是否可用；
+- Command latency signal：命令耗时趋势。
+
+Prometheus 查询示例：
+
+```promql
+sum by (instance) (rate(redis_commands_processed_total[1m]))
+redis_memory_used_bytes
+redis_connected_clients
+redis_up
+redis_db_keys
+```
+
+如果在远端服务器上运行，用本地笔记本访问 Grafana：
+
+```bash
+ssh -L 3000:127.0.0.1:3000 opc@<服务器公网IP>
+```
+
+然后浏览器打开：
+
+```text
+http://127.0.0.1:3000
+```
+
 ### 7.5 压测注意事项
 
 - 压测前确认没有其他实验数据；
@@ -501,6 +579,9 @@ docker stats
 docker compose logs --tail=100 valkey-node-1
 docker compose logs --tail=100 cluster-init
 docker compose logs --tail=100 python-client
+docker compose logs --tail=100 valkey-exporter
+docker compose logs --tail=100 prometheus
+docker compose logs --tail=100 grafana
 ```
 
 持续跟踪：

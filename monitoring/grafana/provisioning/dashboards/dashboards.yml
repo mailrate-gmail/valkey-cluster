@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Valkey Cluster
+    orgId: 1
+    folder: Valkey
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

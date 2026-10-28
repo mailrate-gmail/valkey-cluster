@@ -19,6 +19,7 @@ Valkey Cluster nodes
 - 一个 `cli` 工具容器，内置 `valkey-cli`。
 - 一个 `python-client` 容器，内置 `valkey-py`。
 - 一个 `valkey-admin` Web UI，用于查看拓扑、slot、replication 和 key。
+- Prometheus + Redis/Valkey exporter + Grafana，用于长期监控 QPS、内存、命令延迟和节点状态。
 - Python 示例：普通读写、同 slot 多 key、跨 slot 应用层拆分/合并。
 - 自动备份脚本：`scripts/backup.sh`。
 
@@ -106,6 +107,36 @@ Valkey Admin 会自动识别 Cluster 拓扑，可用于查看：
 - command console
 
 安全提示：Valkey Admin Web 模式默认没有认证。本项目只绑定到 `127.0.0.1:8080`，不要直接暴露到公网。
+
+## 使用 Grafana + Prometheus 监控
+
+当前 Compose 已包含：
+
+- `valkey-exporter`：采集 6 个 Valkey 节点指标；
+- `prometheus`：抓取并保存指标；
+- `grafana`：展示图表。
+
+访问地址：
+
+```text
+Prometheus: http://127.0.0.1:9090
+Grafana:    http://127.0.0.1:3000
+```
+
+Grafana 默认账号：
+
+```text
+username: admin
+password: admin
+```
+
+已自动配置 Prometheus 数据源和一个基础 dashboard：
+
+```text
+Valkey / Valkey Cluster Overview
+```
+
+安全提示：Grafana 和 Prometheus 也只绑定到 `127.0.0.1`，不要直接暴露到公网。
 
 ## valkey-py 示例说明
 
