@@ -20,6 +20,12 @@ Valkey Cluster nodes
 - 一个 `python-client` 容器，内置 `valkey-py`。
 - Python 示例：普通读写、同 slot 多 key、跨 slot 应用层拆分/合并。
 
+## 新手实验手册
+
+面向 Valkey 新手的完整 hands-on lab 见：[`Handson_lab.md`](Handson_lab.md)
+
+手册覆盖系统架构、功能边界、启动方式、配置参数、压测方案、日常运维和在线/停机迁移方案。
+
 ## 架构
 
 ```text
