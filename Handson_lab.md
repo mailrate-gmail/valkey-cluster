@@ -450,38 +450,84 @@ docker compose up -d --build
 
 `valkey-benchmark` 已在 `cli` 容器中。
 
-基础压测：
+推荐使用项目提供的压测脚本，它会给所有压测 key 加上批次标签和 hash tag：
 
 ```bash
-docker compose exec -T cli valkey-benchmark \
-  --cluster \
-  -h valkey-node-1 -p 6379 \
-  -t set,get \
-  -n 100000 \
-  -c 60 \
-  -d 128 \
-  --threads 2
+./scripts/benchmark.sh
+```
+
+默认生成的 key 形如：
+
+```text
+bench:20261029-103000:{000000012345}
+```
+
+脚本使用 `valkey-py` Cluster-aware client 写入数据，而不是直接使用 `valkey-benchmark` 的自定义命令。
+
+原因是：`valkey-benchmark --cluster` 在执行自定义命令时，要求 key 中包含固定 `{hash tag}` 才能预先选择目标节点；如果 `{}` 中是每次变化的随机值，benchmark 不能正确预路由，容易出现 `MOVED`。
+
+脚本的核心逻辑是：
+
+```text
+用 valkey-py 连接 Cluster
+多个 worker 并发写入
+key = bench:<RUN_ID>:{<random-int>}
+每个 key 都有 hash tag
+hash tag 随机变化，因此 key 会分散到不同 slot
+使用 pipeline 提升写入效率
 ```
 
 参数说明：
 
 | 参数 | 说明 |
 |------|------|
-| `--cluster` | 启用 Cluster 模式，benchmark 会感知 slot |
-| `-h valkey-node-1 -p 6379` | 启动连接节点 |
-| `-t set,get` | 测试 `SET` 和 `GET` |
-| `-n 100000` | 总请求数 |
-| `-c 60` | 并发连接数，Cluster 模式下应不小于节点数 |
-| `-d 128` | value 大小，单位字节 |
-| `--threads 2` | benchmark 客户端线程数 |
+| `RUN_ID` | 批次号，默认当前时间 |
+| `REQUESTS` | 总写入次数，默认 `100000` |
+| `CLIENTS` | 并发 worker 数，默认 `16` |
+| `DATA_SIZE` | value 大小，默认 `128` 字节 |
+| `KEYSPACE` | 随机 key 空间，默认 `100000` |
+| `PIPELINE_SIZE` | 每个 pipeline 批量大小，默认 `100` |
+| `BENCH_VALUE` | 自定义 value；不设置时使用指定大小的字符串 |
 
-CSV 输出，方便保存结果：
+可以自定义批次和规模：
+
+```bash
+RUN_ID=course-test-001 REQUESTS=500000 CLIENTS=32 KEYSPACE=500000 ./scripts/benchmark.sh
+```
+
+如果你想使用 `valkey-benchmark` 做原生命令压测，也可以运行不带自定义 key 前缀的命令：
 
 ```bash
 docker compose exec -T cli valkey-benchmark \
   --cluster -h valkey-node-1 -p 6379 \
-  -t set,get -n 100000 -c 60 -d 128 --threads 2 --csv
+  -t set,get -n 100000 -c 60 -d 128 -r 100000 --threads 2
 ```
+
+但这种方式生成的是 benchmark 默认 key，不如 `scripts/benchmark.sh` 方便按批次清理。
+
+清理某个批次：
+
+```bash
+./scripts/cleanup-bench.sh course-test-001
+```
+
+清理所有压测 key：
+
+```bash
+./scripts/cleanup-bench.sh 'bench:*'
+```
+
+删除大量 key 后，如果希望主动让分配器尝试归还空闲内存，可以加 `PURGE=1`：
+
+```bash
+PURGE=1 ./scripts/cleanup-bench.sh 'bench:*'
+```
+
+清理脚本使用的是 `SCAN + UNLINK`：
+
+- `SCAN` 渐进式查找匹配 key，不阻塞全库；
+- `UNLINK` 异步释放内存，比 `DEL` 更适合大批量删除；
+- `MEMORY PURGE` 会要求分配器尝试释放空闲内存，但 RSS 不一定立刻完全下降。
 
 ### 7.3 多组压测建议
 
@@ -560,7 +606,8 @@ http://127.0.0.1:3000
 
 - 压测前确认没有其他实验数据；
 - 记录命令参数、QPS、p50/p95/p99 延迟；
-- 压测会写入大量 key，压测后可以用 `docker compose down -v` 重置；
+- 压测会写入大量 key，压测后优先用 `./scripts/cleanup-bench.sh <RUN_ID>` 清理；
+- 需要彻底重置时再使用 `docker compose down -v`；
 - 不要把本地 Docker 压测结果当成生产容量结果，只能用于学习和相对比较。
 
 ---
@@ -821,7 +868,248 @@ docker compose exec -T cli valkey-cli --cluster import valkey-node-1:6379 \
 | 回滚 | 保留旧库，切换初期可快速回退 |
 | hash tag | 需要事务/Lua 的 key 要提前改名或映射 |
 
-### 9.3 从 Sentinel 多分片迁移到 Valkey Cluster
+### 9.3 Redis Cluster 7.x 迁移到 Valkey Cluster 8.x（3 主 3 从）
+
+本小节假设：
+
+- 源端是 Redis Cluster 7.x；
+- 目标端是当前 Valkey Cluster 8.x；
+- 两边都是 **3 master + 3 replica**；
+- 应用最终会改成 Valkey/Redis Cluster-aware client，例如 `valkey-py`、GLIDE、Jedis/valkey-java、valkey-go 等；
+- 迁移机器能够同时访问源 Redis Cluster 和目标 Valkey Cluster。
+
+#### 9.3.1 迁移前检查
+
+先确认源 Redis Cluster 健康：
+
+```bash
+redis-cli -c -h <redis7-node-1> -p 6379 CLUSTER INFO
+redis-cli -c -h <redis7-node-1> -p 6379 CLUSTER NODES
+redis-cli --cluster check <redis7-node-1>:6379
+```
+
+关键项应为：
+
+```text
+cluster_state:ok
+cluster_slots_assigned:16384
+```
+
+确认目标 Valkey Cluster 健康：
+
+```bash
+cd /home/opc/valkey-cluster
+./scripts/status.sh
+```
+
+确认目标是空集群或专用新集群：
+
+```bash
+docker compose exec -T cli \
+  valkey-cli --cluster call valkey-node-1:6379 DBSIZE --cluster-only-primaries
+```
+
+兼容性检查：
+
+| 检查项 | 说明 |
+|--------|------|
+| 数据类型 | string、list、set、zset、hash、stream 通常可迁移 |
+| 模块数据 | 如果 Redis 7 使用 Redis Stack / module，需要确认 Valkey 8 是否支持等价模块 |
+| ACL / 用户 | 当前实验环境未启用 ACL，生产迁移需同步用户和权限 |
+| TTL | 迁移脚本必须保留剩余 TTL |
+| hash tag | Redis Cluster 和 Valkey Cluster 都使用 `{tag}` 规则，key 名不变时 slot 计算一致 |
+| 多 key 事务/Lua | 仍要求所有 key 同 slot |
+| 客户端 | 迁移后必须使用 Cluster-aware client |
+
+> 推荐新建 Valkey Cluster 后做 side-by-side 迁移，不建议直接在生产 Redis Cluster 中混合替换二进制，除非已经完整验证 Redis 7 和 Valkey 8 混合集群、复制和 failover 兼容性。
+
+#### 9.3.2 停机迁移流程
+
+停机迁移适合可以接受维护窗口的系统。
+
+流程：
+
+1. 宣布维护窗口；
+2. 停止应用写入 Redis 7 Cluster；
+3. 备份源 Redis Cluster；
+4. 确认目标 Valkey Cluster 为空且健康；
+5. 执行全量数据迁移；
+6. 校验 key 数量、TTL 和抽样数据；
+7. 应用连接配置切到 Valkey Cluster；
+8. 启动业务；
+9. 观察错误率、延迟和 Grafana 指标。
+
+可以使用 `DUMP` / `RESTORE` 迁移，这样能保留大部分原始编码和数据类型。示例脚本如下。
+
+在能访问源和目标的机器上安装依赖：
+
+```bash
+python3 -m venv /tmp/redis-to-valkey
+/tmp/redis-to-valkey/bin/pip install 'valkey>=6.2,<7'
+```
+
+运行迁移脚本：
+
+```bash
+SRC_HOST=<redis7-node-1> SRC_PORT=6379 \
+DST_HOST=valkey-node-1 DST_PORT=6379 \
+/tmp/redis-to-valkey/bin/python - <<'PY'
+import os
+import time
+from valkey.cluster import ValkeyCluster
+
+src = ValkeyCluster(
+    host=os.environ["SRC_HOST"],
+    port=int(os.environ.get("SRC_PORT", "6379")),
+    decode_responses=False,
+)
+dst = ValkeyCluster(
+    host=os.environ["DST_HOST"],
+    port=int(os.environ.get("DST_PORT", "6379")),
+    decode_responses=False,
+)
+
+count = 0
+skipped = 0
+failed = 0
+start = time.time()
+
+for key in src.scan_iter(count=1000):
+    try:
+        pttl = src.pttl(key)
+        if pttl == -2:
+            skipped += 1
+            continue
+
+        payload = src.dump(key)
+        if payload is None:
+            skipped += 1
+            continue
+
+        ttl = 0 if pttl < 0 else pttl
+        dst.restore(key, ttl, payload, replace=True)
+        count += 1
+
+        if count % 10000 == 0:
+            elapsed = time.time() - start
+            print(f"migrated={count} skipped={skipped} failed={failed} elapsed={elapsed:.1f}s")
+    except Exception as exc:
+        failed += 1
+        print(f"FAILED key={key!r} error={exc}")
+
+elapsed = time.time() - start
+print(f"done migrated={count} skipped={skipped} failed={failed} elapsed={elapsed:.1f}s")
+PY
+```
+
+如果源 Redis Cluster 只能从 Compose 网络外访问，确保：
+
+- 迁移机器能解析源 Cluster 通告的地址；
+- 迁移机器能解析目标 Valkey Cluster 通告的 `valkey-node-*`；
+- 或者把迁移脚本放进能同时访问两边网络的容器/主机中运行。
+
+迁移后校验源端主节点 key 数：
+
+```bash
+redis-cli --cluster call <redis7-node-1>:6379 DBSIZE --cluster-only-primaries
+```
+
+校验目标端主节点 key 数：
+
+```bash
+docker compose exec -T cli \
+  valkey-cli --cluster call valkey-node-1:6379 DBSIZE --cluster-only-primaries
+```
+
+抽样校验 key 类型、TTL 和值：
+
+```bash
+docker compose exec -T python-client python - <<'PY'
+from valkey.cluster import ValkeyCluster
+c = ValkeyCluster(host="valkey-node-1", port=6379, decode_responses=True)
+for key in ["session:1001", "cart:{1001}:items", "course:1001:quota"]:
+    print(key, "exists=", c.exists(key), "type=", c.type(key), "ttl=", c.ttl(key))
+PY
+```
+
+#### 9.3.3 在线迁移流程
+
+在线迁移适合不能长时间停机的系统。核心思想是：先双写，再全量搬迁，再灰度切读，最后切换。
+
+推荐流程：
+
+1. 新建 Valkey Cluster 8.x；
+2. 应用增加双写：所有新增/修改/删除同时写 Redis 7 和 Valkey 8；
+3. 业务读仍然走 Redis 7；
+4. 后台运行全量迁移脚本，把历史数据迁到 Valkey 8；
+5. 迁移期间双写持续运行；
+6. 再跑一轮补偿迁移，覆盖迁移过程中变化过的 key；
+7. 对核心业务 key 做抽样比对；
+8. 灰度让少量读请求走 Valkey 8；
+9. 逐步扩大读流量；
+10. 短暂冻结写入或进入小维护窗口，做最终补偿；
+11. 全量切读写到 Valkey 8；
+12. 保留 Redis 7 一段时间用于回滚。
+
+在线迁移时，删除操作必须双写到两边。例如：
+
+```text
+DEL old_key  ->  Redis 7 执行 DEL，同时 Valkey 8 执行 DEL
+EXPIRE key   ->  两边都设置相同 TTL
+更新 hash    ->  两边都执行相同 HSET/HDEL
+```
+
+如果只做新增和更新，不同步删除，目标集群会残留旧 key。
+
+#### 9.3.4 在线迁移的数据一致性策略
+
+| 策略 | 说明 |
+|------|------|
+| 双写 | 应用层同时写 Redis 7 和 Valkey 8 |
+| 幂等写 | 同一写入重复执行不会产生错误结果 |
+| 删除同步 | `DEL` / `UNLINK` / `EXPIRE` 也必须同步 |
+| TTL 同步 | 写入时同步剩余 TTL 或统一过期策略 |
+| 抽样校验 | 对业务关键 key 比较类型、TTL和值 |
+| 灰度读 | 一小部分读请求切到 Valkey 8 |
+| 回滚窗口 | 切换后一段时间继续保留 Redis 7 |
+
+#### 9.3.5 迁移后的客户端改造
+
+Redis Cluster 7 和 Valkey Cluster 8 都要求客户端支持 Cluster。迁移后应用连接示例：
+
+```python
+from valkey.cluster import ValkeyCluster
+
+client = ValkeyCluster(
+    host="valkey-node-1",
+    port=6379,
+    decode_responses=True,
+)
+```
+
+注意：
+
+- 不要把 Valkey Cluster 当 standalone 使用；
+- 不要用普通单节点连接池访问所有 key；
+- 事务和 Lua 仍然要求所有 key 同 slot；
+- 跨 slot `MGET` / `DEL` 需要应用层拆分或使用 hash tag 设计 key。
+
+#### 9.3.6 回滚方案
+
+停机迁移回滚：
+
+1. 如果应用尚未切到 Valkey 8，继续使用 Redis 7；
+2. 如果已切换但发现问题，立刻把应用连接切回 Redis 7；
+3. 如果 Valkey 8 已经接收新写入但没有双写回 Redis 7，需要评估反向迁移或数据补偿。
+
+在线迁移回滚：
+
+1. 切换初期保持 Redis 7 和 Valkey 8 双写；
+2. 如果 Valkey 8 读路径有问题，读流量切回 Redis 7；
+3. 修复后重新灰度；
+4. 只有确认稳定后，才停止 Redis 7 双写和保留窗口。
+
+### 9.4 从 Sentinel 多分片迁移到 Valkey Cluster
 
 如果来源是之前的“Sentinel 多分片 + 客户端分片”架构，需要注意：
 
@@ -838,7 +1126,7 @@ docker compose exec -T cli valkey-cli --cluster import valkey-node-1:6379 \
 4. 需要原子多 key 的业务，提前改成 hash tag key 设计；
 5. 完成校验后切流。
 
-### 9.4 迁移校验命令
+### 9.5 迁移校验命令
 
 目标 Cluster 状态：
 

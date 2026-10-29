@@ -212,6 +212,12 @@ make status
 # 运行 Python demo。
 make demo
 
+# 运行带批次标签的 SET 压测。
+make benchmark
+
+# 清理所有 bench:* 压测 key，使用 SCAN + UNLINK。
+make cleanup-bench
+
 # 创建一次 Cluster 备份。
 make backup
 

@@ -1,4 +1,4 @@
-.PHONY: up build status demo backup logs down reset ps
+.PHONY: up build status demo benchmark cleanup-bench backup logs down reset ps
 
 up:
 	docker compose up -d --build
@@ -11,6 +11,12 @@ status:
 
 demo:
 	./scripts/demo.sh
+
+benchmark:
+	./scripts/benchmark.sh
+
+cleanup-bench:
+	./scripts/cleanup-bench.sh 'bench:*'
 
 backup:
 	./scripts/backup.sh
